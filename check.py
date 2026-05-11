@@ -1,7 +1,12 @@
 """Walk the Amsterdam municipality appointment form and print available dates.
 
-Path: Burgerzaken -> Verklaring huwelijksbevoegdheid opvragen -> Nee -> first location.
+Path: Burgerzaken -> Verklaring huwelijksbevoegdheid opvragen -> Nee -> all locations.
+
+Usage:
+    python check.py                          # full listing, every location
+    python check.py --alert-before 2026-05-16  # only print matching (location, date) pairs
 """
+import argparse
 import sys
 from datetime import date
 
@@ -279,21 +284,42 @@ def availability_for_location(loc_name: str, loc_value: str) -> list[date]:
     return parse_available_dates(rr.text)
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--alert-before",
+        metavar="YYYY-MM-DD",
+        type=date.fromisoformat,
+        help="Print only (location, date) pairs strictly before this date. "
+             "When set, the script is silent unless a match is found.",
+    )
+    args = parser.parse_args(argv)
+
     print("walking the form once to enumerate locations...", file=sys.stderr)
     _s, _url, html = walk_to_datumtijd(verbose=True)
     loc_name, locations = all_locations(html)
     print(f"found {len(locations)} locations\n", file=sys.stderr)
 
+    matches: list[tuple[str, date]] = []
     for value, label in locations:
         dates = availability_for_location(loc_name, value)
-        if not dates:
-            print(f"{label}: no availability")
+        if args.alert_before is None:
+            if not dates:
+                print(f"{label}: no availability")
+            else:
+                first, last = dates[0].isoformat(), dates[-1].isoformat()
+                print(f"{label}: {len(dates)} dates ({first} … {last})")
+                for d in dates:
+                    print(f"    {d.isoformat()}")
         else:
-            first, last = dates[0].isoformat(), dates[-1].isoformat()
-            print(f"{label}: {len(dates)} dates ({first} … {last})")
             for d in dates:
-                print(f"    {d.isoformat()}")
+                if d < args.alert_before:
+                    matches.append((label, d))
+
+    if args.alert_before is not None:
+        for label, d in matches:
+            print(f"{d.isoformat()}\t{label}")
+        print(f"{len(matches)} match(es) before {args.alert_before.isoformat()}", file=sys.stderr)
     return 0
 
 

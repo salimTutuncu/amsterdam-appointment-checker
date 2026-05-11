@@ -1,0 +1,75 @@
+name: Check appointment availability
+
+on:
+  schedule:
+    # GitHub's smallest cron unit is 5 min; runs are best-effort and may be
+    # delayed under high load.
+    - cron: "*/5 * * * *"
+  workflow_dispatch: {}  # allow manual trigger from the Actions tab
+
+# Only one run at a time — if a previous run is still walking the form,
+# skip overlap.
+concurrency:
+  group: appt-check
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      ALERT_BEFORE: "2026-05-16"
+      NTFY_TOPIC: "ams-appt-salim-db6da02b14"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Restore previously-alerted dates
+        uses: actions/cache/restore@v4
+        with:
+          path: .alerted.txt
+          key: alerted-dates-${{ github.run_id }}
+          restore-keys: |
+            alerted-dates-
+
+      - name: Run availability check
+        id: run
+        run: |
+          python check.py --alert-before "$ALERT_BEFORE" > matches.txt
+          echo "--- matches ---"
+          cat matches.txt
+          touch .alerted.txt
+          # Suppress lines we've already alerted on, so a long-lived slot
+          # doesn't push every 5 minutes.
+          comm -23 <(sort -u matches.txt) <(sort -u .alerted.txt) > new.txt || true
+          echo "--- new matches ---"
+          cat new.txt
+          if [ -s new.txt ]; then
+            echo "new=1" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Push notification to ntfy
+        if: steps.run.outputs.new == '1'
+        run: |
+          body=$(cat new.txt)
+          curl -sS -X POST "https://ntfy.sh/${NTFY_TOPIC}" \
+            -H "Title: Amsterdam appointment before ${ALERT_BEFORE}" \
+            -H "Priority: urgent" \
+            -H "Tags: calendar,bell" \
+            -d "$body"
+          cat new.txt >> .alerted.txt
+          sort -u -o .alerted.txt .alerted.txt
+
+      - name: Save alerted dates
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: .alerted.txt
+          key: alerted-dates-${{ github.run_id }}
