@@ -2,9 +2,9 @@ name: Check appointment availability
 
 on:
   schedule:
-    # GitHub's smallest cron unit is 5 min; runs are best-effort and may be
-    # delayed under high load.
-    - cron: "*/5 * * * *"
+    # Every 15 min — GitHub throttles short cadences on free public repos, so
+    # 15 actually fires more reliably than 5 in practice.
+    - cron: "*/15 * * * *"
   workflow_dispatch: {}  # allow manual trigger from the Actions tab
 
 # Only one run at a time — if a previous run is still walking the form,
