@@ -132,18 +132,22 @@ def find_option_anywhere(html: str, option_label: str) -> tuple[str, str] | None
     return None
 
 
-def first_location(html: str) -> tuple[str, str, str]:
-    """Return (control_name, option_value, option_label) for the first
-    non-placeholder location option."""
+def all_locations(html: str) -> tuple[str, list[tuple[str, str]]]:
+    """Return (control_name, [(value, label), ...]) for every non-placeholder
+    location option on the DatumTijd page."""
     soup = BeautifulSoup(html, "lxml")
     main = soup.find("div", id="ctl01_CntWrapper_CntMain_ssm") or soup
     for select in main.find_all("select"):
         name = select.get("name", "")
         if not name.startswith("ctl01$CntWrapper$CntMain$ssm$"):
             continue
-        for option in select.find_all("option"):
-            if option.get("value"):
-                return name, option["value"], option.get_text(strip=True)
+        opts = [
+            (o["value"], o.get_text(strip=True))
+            for o in select.find_all("option")
+            if o.get("value")
+        ]
+        if opts:
+            return name, opts
     raise RuntimeError("no location control found")
 
 
@@ -214,17 +218,18 @@ def step_label(url: str, html: str) -> str:
     return f"{url.rsplit('/', 2)[-2]}/{url.rsplit('/', 1)[-1]}  —  {first_question}"
 
 
-def main() -> int:
+def walk_to_datumtijd(verbose: bool = False) -> tuple[requests.Session, str, str]:
+    """Run a fresh session through intro + the 4 answer steps. Returns
+    (session, current_url, current_html) — sitting on the DatumTijd page,
+    before any location has been picked."""
     s = requests.Session()
     s.headers["User-Agent"] = UA
 
     r = s.get(FORM_ROOT, allow_redirects=True, timeout=30)
     r.raise_for_status()
     url, html = r.url, r.text
-    print(f"step 1: {step_label(url, html)}")
     if "Er is geen sessie gevonden" in html:
-        print("session bootstrap failed", file=sys.stderr)
-        return 2
+        raise RuntimeError("session bootstrap failed")
 
     def post(updates: dict[str, str]) -> None:
         nonlocal url, html
@@ -238,40 +243,57 @@ def main() -> int:
         if "Er is geen sessie gevonden" in html:
             raise RuntimeError("session lost mid-walk")
 
-    # Intro -> click Verder.
-    post({})
-    print(f"step 2: {step_label(url, html)}")
+    post({})  # intro -> Categorie
 
     for label, answer in ANSWERS:
         if label:
             name = find_control(html, label)
             if not name:
-                print(f"no control found for {label!r}", file=sys.stderr)
-                return 4
+                raise RuntimeError(f"no control for {label!r}")
             value = find_option_value(html, name, answer)
             if not value:
-                print(f"no option {answer!r} under {label!r}", file=sys.stderr)
-                return 4
+                raise RuntimeError(f"no option {answer!r} under {label!r}")
         else:
             found = find_option_anywhere(html, answer)
             if not found:
-                print(f"no option {answer!r} found anywhere on page", file=sys.stderr)
-                return 4
+                raise RuntimeError(f"no option {answer!r} on page")
             name, value = found
         post({name: value})
-        print(f"after {answer!r}: {step_label(url, html)}")
+        if verbose:
+            print(f"  after {answer!r}: {step_label(url, html)}", file=sys.stderr)
 
-    loc_name, loc_value, loc_label = first_location(html)
-    print(f"picking location: {loc_label}")
-    post({loc_name: loc_value})
+    if "/DatumTijd" not in url:
+        raise RuntimeError(f"expected to land on DatumTijd, got {url}")
+    return s, url, html
 
-    dates = parse_available_dates(html)
-    if not dates:
-        print(f"no availability at {loc_label}")
-        return 0
-    print(f"\navailable dates at {loc_label} ({len(dates)}):")
-    for d in dates:
-        print(f"  {d.isoformat()}")
+
+def availability_for_location(loc_name: str, loc_value: str) -> list[date]:
+    """Fresh session: walk to DatumTijd, pick this location, parse the calendar."""
+    s, url, html = walk_to_datumtijd()
+    data = extract_inputs(html)
+    data[loc_name] = loc_value
+    btn_name, btn_value = forward_button(html)
+    data[btn_name] = btn_value
+    rr = s.post(url, data=data, headers={"Referer": url}, timeout=30)
+    rr.raise_for_status()
+    return parse_available_dates(rr.text)
+
+
+def main() -> int:
+    print("walking the form once to enumerate locations...", file=sys.stderr)
+    _s, _url, html = walk_to_datumtijd(verbose=True)
+    loc_name, locations = all_locations(html)
+    print(f"found {len(locations)} locations\n", file=sys.stderr)
+
+    for value, label in locations:
+        dates = availability_for_location(loc_name, value)
+        if not dates:
+            print(f"{label}: no availability")
+        else:
+            first, last = dates[0].isoformat(), dates[-1].isoformat()
+            print(f"{label}: {len(dates)} dates ({first} … {last})")
+            for d in dates:
+                print(f"    {d.isoformat()}")
     return 0
 
 
