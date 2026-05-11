@@ -303,15 +303,18 @@ def main(argv: list[str] | None = None) -> int:
     matches: list[tuple[str, date]] = []
     for value, label in locations:
         dates = availability_for_location(loc_name, value)
-        if args.alert_before is None:
-            if not dates:
-                print(f"{label}: no availability")
-            else:
-                first, last = dates[0].isoformat(), dates[-1].isoformat()
-                print(f"{label}: {len(dates)} dates ({first} … {last})")
+        # Per-location summary always to stderr so it's visible in CI logs
+        # without polluting the matches stream on stdout.
+        summary_stream = sys.stdout if args.alert_before is None else sys.stderr
+        if not dates:
+            print(f"{label}: no availability", file=summary_stream)
+        else:
+            first, last = dates[0].isoformat(), dates[-1].isoformat()
+            print(f"{label}: {len(dates)} dates ({first} … {last})", file=summary_stream)
+            if args.alert_before is None:
                 for d in dates:
                     print(f"    {d.isoformat()}")
-        else:
+        if args.alert_before is not None:
             for d in dates:
                 if d < args.alert_before:
                     matches.append((label, d))
@@ -319,7 +322,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.alert_before is not None:
         for label, d in matches:
             print(f"{d.isoformat()}\t{label}")
-        print(f"{len(matches)} match(es) before {args.alert_before.isoformat()}", file=sys.stderr)
+        print(f"\n{len(matches)} match(es) before {args.alert_before.isoformat()}", file=sys.stderr)
     return 0
 
 
